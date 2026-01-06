@@ -51,8 +51,13 @@ def exploration_field(grid):
 
 import random
 import os
+import matplotlib
+# use non-interactive backend to avoid GUI backend crashes (headless or incompatible setups)
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib import cm
+import datetime
+import uuid
 
 # Use the StallType instances defined above
 STALL_TYPES = [FRESH, PRODUCE, COOKED, GENERAL]
@@ -93,6 +98,7 @@ def fitness_score(x, y, stall, efficiency, exploration):
     return score
 
 if __name__ == "__main__":
+    print("Script started")
     grid = Grid(40, 25)
 
     eff = efficiency_field(grid)
@@ -152,15 +158,20 @@ if __name__ == "__main__":
     print("Stall type counts:", counts)
 
     # --- Visualization: try COMPAS viewer, fallback to matplotlib heatmap ---
+    # Skip COMPAS imports to avoid native GUI/library crashes in this environment.
+    Viewer = None
+    Mesh = None
+
+    # diagnostic: report whether a COMPAS Viewer is available
     try:
-        import compas
-        from compas.datastructures import Mesh
-        try:
-            from compas_viewer import Viewer
-        except Exception:
-            Viewer = None
-    except Exception:
+        print("Viewer available:", Viewer is not None)
+    except NameError:
+        print("Viewer available: False (Viewer not defined)")
+
+    # Allow forcing viewer off in environments where it causes crashes
+    if os.environ.get('USE_COMPAS_VIEWER', '0') != '1':
         Viewer = None
+        print('COMPAS viewer disabled (set USE_COMPAS_VIEWER=1 to enable)')
 
     def box_mesh_at(x, y, idx, height=0.6):
         # create small prism centered on cell (x,y) with height
@@ -189,7 +200,11 @@ if __name__ == "__main__":
             [2, 3, 7, 6],
             [3, 0, 4, 7],
         ]
-        return Mesh.from_vertices_and_faces(verts, faces)
+        if Mesh is None:
+            # return a lightweight representation when Mesh class not available
+            return {'verts': verts, 'faces': faces}
+        else:
+            return Mesh.from_vertices_and_faces(verts, faces)
 
     color_map = {
         'Fresh': (1.0, 0.2, 0.2),
@@ -268,88 +283,86 @@ if __name__ == "__main__":
         pass
 
     # --- Always also save matplotlib 2D heatmap and 3D bar plot for quick viewing ---
+    print("Saving matplotlib images...")
     try:
         os.makedirs('outputs', exist_ok=True)
+        # unique timestamp + short uuid to avoid overwriting previous runs
+        ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S') + '_' + uuid.uuid4().hex[:6]
+        saved_files = []
         stall_grid = np.full((grid.height, grid.width), -1, dtype=int)
         for y in range(grid.height):
             for x in range(grid.width):
                 stall_grid[y, x] = grid.stall_map[y, x]
 
-        # 2D RGB visualization by stall category
-        height, width = stall_grid.shape
-        rgb = np.ones((height, width, 3), dtype=float)  # default white for empty
-        for y in range(height):
-            for x in range(width):
-                idx = stall_grid[y, x]
-                if idx >= 0:
-                    stname = STALL_TYPES[idx].name
-                    rgb[y, x, :] = color_map.get(stname, (0.5, 0.5, 0.5))
-
-        plt.figure(figsize=(10, 6))
-        plt.imshow(rgb, interpolation='nearest', origin='lower')
-        plt.title('Stall map (color-coded by category)')
-        # legend
-        import matplotlib.patches as mpatches
-        patches = [mpatches.Patch(color=color_map[s.name], label=s.name) for s in STALL_TYPES]
-        patches.insert(0, mpatches.Patch(color=(1,1,1), label='Empty'))
-        plt.legend(handles=patches, bbox_to_anchor=(1.05, 1), loc='upper left')
-        plt.tight_layout()
-        plt.savefig('outputs/stall_map_debug.png', dpi=200)
-        plt.close()
-
-        # overlay primary and secondary paths and utilities on 2D image
-        plt.figure(figsize=(10, 6))
-        plt.imshow(rgb, interpolation='nearest', origin='lower')
-        # primary paths
-        px = [p[0] for p in primary_paths if 0 <= p[1] < height]
-        py = [p[1] for p in primary_paths if 0 <= p[1] < height]
-        if px and py:
-            plt.scatter(px, py, c='black', s=2)
-        # secondary
-        sx = [p[0] for p in secondary_paths if 0 <= p[1] < height]
-        sy = [p[1] for p in secondary_paths if 0 <= p[1] < height]
-        if sx and sy:
-            plt.scatter(sx, sy, c='gray', s=1)
-        # drains and electric
-        if drain_points:
-            dxs = [d[0] for d in drain_points]; dys = [d[1] for d in drain_points]
-            plt.scatter(dxs, dys, c='blue', marker='o', s=60, label='Drains')
-        if electric_points:
-            exs = [e[0] for e in electric_points]; eys = [e[1] for e in electric_points]
-            plt.scatter(exs, eys, c='yellow', marker='s', s=60, label='Electric')
-        plt.legend(handles=patches + [], bbox_to_anchor=(1.05, 1), loc='upper left')
-        plt.title('Stall map with paths and utilities')
-        plt.tight_layout()
-        plt.savefig('outputs/stall_map_with_paths.png', dpi=200)
-        plt.close()
-
-        # 3D bar plot
+        # 2D RGB visualization by stall category saved via Pillow (avoids matplotlib GUI issues)
         try:
-            from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
-            fig = plt.figure(figsize=(12, 8))
-            ax = fig.add_subplot(111, projection='3d')
-            dx = dy = 0.8
-            for y in range(grid.height):
-                for x in range(grid.width):
-                    idx = grid.stall_map[y, x]
+            from PIL import Image
+            height, width = stall_grid.shape
+            rgb = np.ones((height, width, 3), dtype=float)  # default white for empty
+            for y in range(height):
+                for x in range(width):
+                    idx = stall_grid[y, x]
                     if idx >= 0:
-                        z = 0
-                        dz = 0.6
-                        color = color_map.get(STALL_TYPES[idx].name, (0.5, 0.5, 0.5))
-                        ax.bar3d(x - 0.4, y - 0.4, z, dx, dy, dz, color=color, shade=True)
-            ax.set_xlim(0, grid.width)
-            ax.set_ylim(0, grid.height)
-            ax.set_zlim(0, 1)
-            ax.set_xlabel('X')
-            ax.set_ylabel('Y')
-            ax.set_zlabel('Height')
-            plt.title('3D Stall layout (matplotlib)')
-            plt.savefig('outputs/stall_map_3d.png', dpi=200)
-            plt.close()
-        except Exception as e:
-            print('3D plot failed:', e)
+                        stname = STALL_TYPES[idx].name
+                        rgb[y, x, :] = color_map.get(stname, (0.5, 0.5, 0.5))
 
-        print("Saved images: outputs/stall_map_debug.png, outputs/stall_map_3d.png")
+            img_arr = (np.clip(rgb, 0.0, 1.0) * 255).astype('uint8')
+            fname_debug = f'outputs/stall_map_debug_{ts}.png'
+            Image.fromarray(img_arr, 'RGB').save(fname_debug)
+            saved_files.append(fname_debug)
+
+            # overlay primary/secondary/utilities by drawing on a copy
+            overlay = img_arr.copy()
+            # primary paths: black pixels
+            for (px, py) in primary_paths:
+                if 0 <= py < height and 0 <= px < width:
+                    overlay[py, px] = (0, 0, 0)
+            # secondary paths: gray
+            for (sx, sy) in secondary_paths:
+                if 0 <= sy < height and 0 <= sx < width:
+                    overlay[sy, sx] = (128, 128, 128)
+            # drains: blue
+            for (dx, dy) in drain_points:
+                if 0 <= dy < height and 0 <= dx < width:
+                    overlay[dy, dx] = (0, 0, 255)
+            # electric: yellow
+            for (ex, ey) in electric_points:
+                if 0 <= ey < height and 0 <= ex < width:
+                    overlay[ey, ex] = (255, 255, 0)
+
+            fname_paths = f'outputs/stall_map_with_paths_{ts}.png'
+            Image.fromarray(overlay, 'RGB').save(fname_paths)
+            saved_files.append(fname_paths)
+
+            # save raw stall grid as CSV for quick inspection
+            csv_path = f'outputs/stall_grid_{ts}.csv'
+            np.savetxt(csv_path, stall_grid, fmt='%d', delimiter=',')
+            saved_files.append(csv_path)
+        except Exception as e:
+            # Pillow not available or saving failed; fall back to writing CSV only
+            try:
+                csv_path = f'outputs/stall_grid_{ts}.csv'
+                np.savetxt(csv_path, stall_grid, fmt='%d', delimiter=',')
+                saved_files.append(csv_path)
+                print('Pillow not available; saved stall grid CSV only.')
+            except Exception as e2:
+                print('Failed to save visualizations via Pillow or CSV:', e, e2)
+
+        # write run summary (counts + saved filenames)
+        summary_path = f'outputs/run_summary_{ts}.txt'
+        try:
+            with open(summary_path, 'w', encoding='utf-8') as f:
+                f.write(f'Script timestamp: {ts}\n')
+                f.write(f'Total cells: {total_cells}, Stalls placed: {stall_count}, Empty: {empty_count}\n')
+                f.write('Stall type counts:\n')
+                for k, v in counts.items():
+                    f.write(f'  {k}: {v}\n')
+                f.write('\nSaved files:\n')
+                for p in saved_files:
+                    f.write(f'  {p}\n')
+            print(f'Saved images and summary to outputs/ (summary: {summary_path})')
+        except Exception as e:
+            print('Failed to write run summary:', e)
     except Exception as e:
         print('Failed to save matplotlib visualizations:', e)
 

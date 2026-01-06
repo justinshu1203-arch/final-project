@@ -1,0 +1,12 @@
+Script timestamp: 20260106_162854_e530a3
+Total cells: 1000, Stalls placed: 350, Empty: 376
+Stall type counts:
+  Fresh: 76
+  Produce: 87
+  Cooked: 104
+  General: 83
+
+Saved files:
+  outputs/stall_map_debug_20260106_162854_e530a3.png
+  outputs/stall_map_with_paths_20260106_162854_e530a3.png
+  outputs/stall_grid_20260106_162854_e530a3.csv
