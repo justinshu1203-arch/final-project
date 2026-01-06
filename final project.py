@@ -25,16 +25,19 @@ class Grid:
                 if self.in_bounds(x+dx, y+dy)]
     
 class StallType:
-    def __init__(self, name, odor, wetness, affinity):
+    def __init__(self, name, odor, wetness, affinity, sizes=None):
         self.name = name
         self.odor = odor
         self.wetness = wetness
         self.affinity = affinity  # long-term vs short-term
+        # sizes: list of (w,h) options for the stall footprint in grid cells
+        # if None, default to single-cell
+        self.sizes = sizes or [(1, 1)]
 
-FRESH = StallType("Fresh", odor=3, wetness=3, affinity="long")
-PRODUCE = StallType("Produce", odor=1, wetness=1, affinity="both")
-COOKED = StallType("Cooked", odor=3, wetness=1, affinity="short")
-GENERAL = StallType("General", odor=0, wetness=0, affinity="both")
+FRESH = StallType("Fresh", odor=3, wetness=3, affinity="long", sizes=[(2,2),(2,3),(3,2)])
+PRODUCE = StallType("Produce", odor=1, wetness=1, affinity="both", sizes=[(1,1),(1,2),(2,1)])
+COOKED = StallType("Cooked", odor=3, wetness=1, affinity="short", sizes=[(1,1),(1,2)])
+GENERAL = StallType("General", odor=0, wetness=0, affinity="both", sizes=[(1,1),(2,1)])
 
 def efficiency_field(grid):
     # 越靠近主動線，值越高
@@ -67,9 +70,19 @@ def ca_step(grid, efficiency, exploration):
     best_indices = [i for i, s in enumerate(scores) if s == max_score]
     best_idx = random.choice(best_indices)
 
-    # place the stall
-    grid.cells[y, x] = CellType.STALL
-    grid.stall_map[y, x] = best_idx
+    # choose size option for this stall type
+    w, h = random.choice(STALL_TYPES[best_idx].sizes)
+
+    # check bounds and occupancy for footprint (x..x+w-1, y..y+h-1)
+    if x + w > grid.width or y + h > grid.height:
+        return
+    region = grid.cells[y:y+h, x:x+w]
+    if np.any(region != CellType.EMPTY):
+        return
+
+    # place the stall: mark all cells in footprint
+    grid.cells[y:y+h, x:x+w] = CellType.STALL
+    grid.stall_map[y:y+h, x:x+w] = best_idx
 
 def fitness_score(x, y, stall, efficiency, exploration):
     score = 0.0
@@ -85,9 +98,47 @@ if __name__ == "__main__":
     eff = efficiency_field(grid)
     exp = exploration_field(grid)
 
-    # Run a few CA steps for debugging
-    for i in range(200):
+    # --- Define primary/secondary paths and utilities (drains/electric) ---
+    primary_paths = []
+    secondary_paths = []
+    # primary: central horizontal aisle and outer border
+    center_row = grid.height // 2
+    for x in range(grid.width):
+        primary_paths.append((x, center_row))
+        primary_paths.append((x, 0))
+        primary_paths.append((x, grid.height - 1))
+    # secondary: vertical aisles every 6 columns
+    for x in range(3, grid.width, 6):
+        for y in range(grid.height):
+            secondary_paths.append((x, y))
+
+    # utilities
+    drain_points = [(10, 0), (30, 0)]
+    electric_points = [(0, center_row), (grid.width - 1, center_row)]
+
+    # mark aisles on grid
+    for (x, y) in primary_paths + secondary_paths:
+        if grid.in_bounds(x, y):
+            grid.cells[y, x] = CellType.AISLE
+
+    # ensure utilities are not overwritten
+    for (x, y) in drain_points + electric_points:
+        if grid.in_bounds(x, y):
+            grid.cells[y, x] = CellType.AISLE
+
+    # Run CA steps until target density reached or max attempts exceeded
+    total_cells = grid.width * grid.height
+    target_density = 0.35  # desired fraction of cells to fill with stalls (adjustable)
+    target_cells = int(total_cells * target_density)
+    placed_cells = 0
+    attempts = 0
+    max_attempts = 5000
+    while placed_cells < target_cells and attempts < max_attempts:
+        before = int((grid.cells == CellType.STALL).sum())
         ca_step(grid, eff, exp)
+        after = int((grid.cells == CellType.STALL).sum())
+        placed_cells += max(0, after - before)
+        attempts += 1
 
     # report counts
     total_cells = grid.width * grid.height
@@ -172,6 +223,41 @@ if __name__ == "__main__":
                             viewer.scene.add(data)
                         except Exception:
                             pass
+        # add path visuals (flat boxes) for primary and secondary
+        def add_path_cells(cells, col):
+            for (px, py) in cells:
+                if not grid.in_bounds(px, py):
+                    continue
+                pmesh = box_mesh_at(px, py, 0, height=0.02)
+                try:
+                    viewer.scene.add(pmesh, color=col)
+                except Exception:
+                    try:
+                        d = pmesh.to_data(); d['color'] = col; viewer.scene.add(d)
+                    except Exception:
+                        pass
+
+        add_path_cells(primary_paths, (0.05, 0.05, 0.05))
+        add_path_cells(secondary_paths, (0.5, 0.5, 0.5))
+
+        # add utility markers
+        def add_util_point(pt, col):
+            px, py = pt
+            if not grid.in_bounds(px, py):
+                return
+            umesh = box_mesh_at(px, py, 0, height=0.3)
+            try:
+                viewer.scene.add(umesh, color=col)
+            except Exception:
+                try:
+                    d = umesh.to_data(); d['color'] = col; viewer.scene.add(d)
+                except Exception:
+                    pass
+
+        for dp in drain_points:
+            add_util_point(dp, (0.2, 0.4, 0.9))
+        for ep in electric_points:
+            add_util_point(ep, (1.0, 1.0, 0.0))
         print("Opening COMPAS viewer window...")
         try:
             viewer.show()
@@ -209,6 +295,32 @@ if __name__ == "__main__":
         plt.legend(handles=patches, bbox_to_anchor=(1.05, 1), loc='upper left')
         plt.tight_layout()
         plt.savefig('outputs/stall_map_debug.png', dpi=200)
+        plt.close()
+
+        # overlay primary and secondary paths and utilities on 2D image
+        plt.figure(figsize=(10, 6))
+        plt.imshow(rgb, interpolation='nearest', origin='lower')
+        # primary paths
+        px = [p[0] for p in primary_paths if 0 <= p[1] < height]
+        py = [p[1] for p in primary_paths if 0 <= p[1] < height]
+        if px and py:
+            plt.scatter(px, py, c='black', s=2)
+        # secondary
+        sx = [p[0] for p in secondary_paths if 0 <= p[1] < height]
+        sy = [p[1] for p in secondary_paths if 0 <= p[1] < height]
+        if sx and sy:
+            plt.scatter(sx, sy, c='gray', s=1)
+        # drains and electric
+        if drain_points:
+            dxs = [d[0] for d in drain_points]; dys = [d[1] for d in drain_points]
+            plt.scatter(dxs, dys, c='blue', marker='o', s=60, label='Drains')
+        if electric_points:
+            exs = [e[0] for e in electric_points]; eys = [e[1] for e in electric_points]
+            plt.scatter(exs, eys, c='yellow', marker='s', s=60, label='Electric')
+        plt.legend(handles=patches + [], bbox_to_anchor=(1.05, 1), loc='upper left')
+        plt.title('Stall map with paths and utilities')
+        plt.tight_layout()
+        plt.savefig('outputs/stall_map_with_paths.png', dpi=200)
         plt.close()
 
         # 3D bar plot
